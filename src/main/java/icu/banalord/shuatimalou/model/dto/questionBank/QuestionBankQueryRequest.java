@@ -1,19 +1,18 @@
-package icu.banalord.shuatimalou.model.dto.questionbankquestion;
+package icu.banalord.shuatimalou.model.dto.questionBank;
 
 import icu.banalord.shuatimalou.common.PageRequest;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 import java.io.Serializable;
-import java.util.List;
 
 /**
- * 查询题库题目关联请求
+ * 查询题库请求
  *
  */
 @EqualsAndHashCode(callSuper = true)
 @Data
-public class QuestionBankQuestionQueryRequest extends PageRequest implements Serializable {
+public class QuestionBankQueryRequest extends PageRequest implements Serializable {
 
     /**
      * id
@@ -35,20 +34,26 @@ public class QuestionBankQuestionQueryRequest extends PageRequest implements Ser
      */
     private String title;
 
-    /**
-     * 内容
-     */
-    private String content;
 
     /**
-     * 标签列表
+     * 描述
      */
-    private List<String> tags;
+    private String description;
+
+    /**
+     * 图片
+     */
+    private String picture;
 
     /**
      * 创建用户 id
      */
     private Long userId;
+
+    /**
+     * 是否要关联查询题目列表
+     */
+    private boolean needQueryQuestionList;
 
     private static final long serialVersionUID = 1L;
 }

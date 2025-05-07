@@ -1,4 +1,4 @@
-package icu.banalord.shuatimalou.model.dto.questionbankquestion;
+package icu.banalord.shuatimalou.model.dto.questionBank;
 
 import lombok.Data;
 
@@ -6,11 +6,16 @@ import java.io.Serializable;
 import java.util.List;
 
 /**
- * 创建题库题目关联请求
+ * 更新题库请求
  *
  */
 @Data
-public class QuestionBankQuestionAddRequest implements Serializable {
+public class QuestionBankUpdateRequest implements Serializable {
+
+    /**
+     * id
+     */
+    private Long id;
 
     /**
      * 标题

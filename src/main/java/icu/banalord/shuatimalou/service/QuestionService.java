@@ -3,9 +3,11 @@ package icu.banalord.shuatimalou.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
+import icu.banalord.shuatimalou.common.BaseResponse;
 import icu.banalord.shuatimalou.model.dto.question.QuestionQueryRequest;
 import icu.banalord.shuatimalou.model.entity.Question;
 import icu.banalord.shuatimalou.model.vo.QuestionVO;
+import org.springframework.web.bind.annotation.RequestBody;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -30,7 +32,7 @@ public interface QuestionService extends IService<Question> {
      * @return
      */
     QueryWrapper<Question> getQueryWrapper(QuestionQueryRequest questionQueryRequest);
-    
+
     /**
      * 获取题目封装
      *
@@ -48,4 +50,11 @@ public interface QuestionService extends IService<Question> {
      * @return
      */
     Page<QuestionVO> getQuestionVOPage(Page<Question> questionPage, HttpServletRequest request);
+
+    /**
+     * 分页获取题目列表
+     * @param questionQueryRequest
+     * @return
+     */
+    Page<Question> listQuestionByPage(@RequestBody QuestionQueryRequest questionQueryRequest);
 }
