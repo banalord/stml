@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import icu.banalord.shuatimalou.common.BaseResponse;
+import icu.banalord.shuatimalou.model.dto.post.PostQueryRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionQueryRequest;
+import icu.banalord.shuatimalou.model.entity.Post;
 import icu.banalord.shuatimalou.model.entity.Question;
 import icu.banalord.shuatimalou.model.vo.QuestionVO;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -57,4 +59,12 @@ public interface QuestionService extends IService<Question> {
      * @return
      */
     Page<Question> listQuestionByPage(@RequestBody QuestionQueryRequest questionQueryRequest);
+
+    /**
+     * 从 ES 查询题目
+     *
+     * @param questionQueryRequest
+     * @return
+     */
+    Page<Question> searchFromEs(QuestionQueryRequest questionQueryRequest);
 }

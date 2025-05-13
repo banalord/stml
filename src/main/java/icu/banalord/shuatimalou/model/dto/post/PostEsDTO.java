@@ -21,7 +21,7 @@ import java.util.List;
  *
  **/
 // todo 取消注释开启 ES（须先配置 ES）
-@Document(indexName = "post")
+//@Document(indexName = "post")
 @Data
 public class PostEsDTO implements Serializable {
 
