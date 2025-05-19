@@ -17,6 +17,7 @@ import icu.banalord.shuatimalou.model.dto.question.QuestionAddRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionEditRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionQueryRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionUpdateRequest;
+import icu.banalord.shuatimalou.model.dto.questionBank.QuestionBatchDeleteRequest;
 import icu.banalord.shuatimalou.model.entity.Question;
 import icu.banalord.shuatimalou.model.entity.QuestionBankQuestion;
 import icu.banalord.shuatimalou.model.entity.User;
@@ -268,4 +269,14 @@ public class QuestionController {
         //Page<Question> questionPage = questionService.listQuestionByPage(questionQueryRequest);
         return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
     }
+
+    @PostMapping("/delete/batch")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Boolean> batchDeleteQuestions(@RequestBody QuestionBatchDeleteRequest questionBatchDeleteRequest,
+                                                      HttpServletRequest request) {
+        ThrowUtils.throwIf(questionBatchDeleteRequest == null, ErrorCode.PARAMS_ERROR);
+        questionService.batchDeleteQuestions(questionBatchDeleteRequest.getQuestionIdList());
+        return ResultUtils.success(true);
+    }
+
 }
