@@ -149,9 +149,7 @@ public class QuestionBankServiceImpl extends ServiceImpl<QuestionBankMapper, Que
             return questionBankVOPage;
         }
         // 对象列表 => 封装对象列表
-        List<QuestionBankVO> questionBankVOList = questionBankList.stream().map(questionBank -> {
-            return QuestionBankVO.objToVo(questionBank);
-        }).collect(Collectors.toList());
+        List<QuestionBankVO> questionBankVOList = questionBankList.stream().map(QuestionBankVO::objToVo).collect(Collectors.toList());
 
         // todo 可以根据需要为封装对象补充值，不需要的内容可以删除
         // region 可选

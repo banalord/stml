@@ -106,9 +106,17 @@ hotkey:
   app-name: stml
   caffeine-size: 10000
   push-period: 1000
-  etcd-server: http://yourAddress:2379
-#    username: root
-#    password: 123456
+  etcd-server: http://115.190.28.45:2379
+# 配置中心
+nacos:
+  config:
+    server-addr: 127.0.0.1:8848  # nacos 地址
+    bootstrap:
+      enable: true  # 预加载
+    data-id: stml # 控制台填写的 Data ID
+    group: DEFAULT_GROUP # 控制台填写的 group
+    type: yaml  # 选择的文件格式
+    auto-refresh: true # 开启自动刷新
   # 文件上传
   servlet:
     multipart:
