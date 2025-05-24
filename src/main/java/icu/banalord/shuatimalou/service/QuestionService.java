@@ -75,4 +75,12 @@ public interface QuestionService extends IService<Question> {
      * @param questionIdList
      */
     void batchDeleteQuestions(List<Long> questionIdList);
+
+    /**
+     * 批量删除题目（事务，仅供内部调用）
+     *
+     * @param questionIdList
+     */
+    @Transactional(rollbackFor = Exception.class)
+    void batchDeleteQuestionsInner(List<Long> questionIdList);
 }

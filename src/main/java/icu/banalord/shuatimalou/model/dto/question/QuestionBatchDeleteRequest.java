@@ -1,4 +1,4 @@
-package icu.banalord.shuatimalou.model.dto.questionBank;
+package icu.banalord.shuatimalou.model.dto.question;
 
 import lombok.Data;
 

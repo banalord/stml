@@ -1,6 +1,7 @@
 package icu.banalord.shuatimalou.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.collection.ListUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -8,7 +9,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import icu.banalord.shuatimalou.common.ErrorCode;
 import icu.banalord.shuatimalou.constant.CommonConstant;
-import icu.banalord.shuatimalou.exception.BusinessException;
 import icu.banalord.shuatimalou.exception.ThrowUtils;
 import icu.banalord.shuatimalou.mapper.QuestionMapper;
 import icu.banalord.shuatimalou.model.dto.question.QuestionEsDTO;
@@ -30,6 +30,7 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchRestTemplate;
 import org.springframework.data.elasticsearch.core.SearchHit;
@@ -46,11 +47,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
  * 题目服务实现
- *
  */
 @Service
 @Slf4j
@@ -164,25 +168,7 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         }
         UserVO userVO = userService.getUserVO(user);
         questionVO.setUser(userVO);
-        // 2. 已登录，获取用户点赞、收藏状态（暂时用不上）
-        //long questionId = question.getId();
-        //User loginUser = userService.getLoginUserPermitNull(request);
-        //if (loginUser != null) {
-        //    // 获取点赞
-        //    QueryWrapper<QuestionThumb> questionThumbQueryWrapper = new QueryWrapper<>();
-        //    questionThumbQueryWrapper.in("questionId", questionId);
-        //    questionThumbQueryWrapper.eq("userId", loginUser.getId());
-        //    QuestionThumb questionThumb = questionThumbMapper.selectOne(questionThumbQueryWrapper);
-        //    questionVO.setHasThumb(questionThumb != null);
-        //    // 获取收藏
-        //    QueryWrapper<QuestionFavour> questionFavourQueryWrapper = new QueryWrapper<>();
-        //    questionFavourQueryWrapper.in("questionId", questionId);
-        //    questionFavourQueryWrapper.eq("userId", loginUser.getId());
-        //    QuestionFavour questionFavour = questionFavourMapper.selectOne(questionFavourQueryWrapper);
-        //    questionVO.setHasFavour(questionFavour != null);
-        //}
         // endregion
-
         return questionVO;
     }
 
@@ -201,9 +187,7 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
             return questionVOPage;
         }
         // 对象列表 => 封装对象列表
-        List<QuestionVO> questionVOList = questionList.stream().map(question -> {
-            return QuestionVO.objToVo(question);
-        }).collect(Collectors.toList());
+        List<QuestionVO> questionVOList = questionList.stream().map(QuestionVO::objToVo).collect(Collectors.toList());
 
         // todo 可以根据需要为封装对象补充值，不需要的内容可以删除
         // region 可选
@@ -337,11 +321,54 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         return page;
     }
 
-    @Transactional(rollbackFor = Exception.class)
+
     @Override
     public void batchDeleteQuestions(List<Long> questionIdList) {
-        // todo 待优化
-        ThrowUtils.throwIf(CollUtil.isEmpty(questionIdList),ErrorCode.PARAMS_ERROR, "要删除的题目列表为空");
+        ThrowUtils.throwIf(CollUtil.isEmpty(questionIdList), ErrorCode.PARAMS_ERROR, "要删除的题目列表为空");
+        // 判断合法题目列表
+        LambdaQueryWrapper<Question> validQueryWrapper = Wrappers.lambdaQuery(Question.class)
+                .select(Question::getId)
+                .in(Question::getId, questionIdList);
+        // 合法的题目id列表
+        List<Long> validQuestionIdList = this.listObjs(validQueryWrapper, o -> (Long) o);
+        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "题目 id 均无效或不存在");
+
+        // 这里使用多线程提升并发，是因为question表是逻辑删除，删除操作不是毁灭性的
+        // 自定义线程池（IO 密集型线程池）
+        ThreadPoolExecutor customExecutor = new ThreadPoolExecutor(
+                4,             // 核心线程数
+                10,                        // 最大线程数
+                30L,                       // 线程空闲存活时间
+                TimeUnit.SECONDS,           // 存活时间单位
+                new LinkedBlockingQueue<>(3000),  // 阻塞队列容量
+                new ThreadPoolExecutor.CallerRunsPolicy() // 拒绝策略：由调用线程处理任务
+        );
+        // 布置所有批次任务
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        // 分批处理避免长事务，这里每次处理 1000 条数据
+        int batchSize = 1000;
+        // 改用HuTool的List分片工具类
+        List<List<Long>> partitions = ListUtil.partition(validQuestionIdList, batchSize);
+
+        for (List<Long> subList : partitions) {
+            // 通过代理获取Service，以免事务失效
+            //QuestionService questionService = (QuestionServiceImpl) AopContext.currentProxy();
+            QuestionService questionService = (QuestionService) AopContext.currentProxy();
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                questionService.batchDeleteQuestionsInner(subList);
+            }, customExecutor);
+            futures.add(future);
+        }
+        // 等待所有批次完成操作
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        // 关闭线程池
+        customExecutor.shutdown();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public void batchDeleteQuestionsInner(List<Long> questionIdList) {
 
         // 批量删除题目
         boolean result = this.removeBatchByIds(questionIdList);
@@ -351,10 +378,7 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
         LambdaQueryWrapper<QuestionBankQuestion> queryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
                 .in(QuestionBankQuestion::getQuestionId, questionIdList);
 
-        result = questionBankQuestionService.remove(queryWrapper);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR, "删除题目题库关联失败");
+        questionBankQuestionService.remove(queryWrapper);
     }
-
-
 
 }

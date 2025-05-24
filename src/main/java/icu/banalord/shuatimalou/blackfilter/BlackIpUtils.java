@@ -13,7 +13,7 @@ import java.util.Map;
  *
  */
 public class BlackIpUtils {
-    private static BitMapBloomFilter bloomFilter;
+    private static BitMapBloomFilter bloomFilter = new BitMapBloomFilter(100);
 
     // 判断ip是否在黑名单内
     public static boolean isBlackIP(String ip) {

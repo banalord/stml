@@ -9,8 +9,10 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 
-// todo 如需开启 Redis，须移除 exclude 中的内容
+// todo 如需开启 Redis，需移除 exclude 中的内容
 //@SpringBootApplication(exclude = {RedisAutoConfiguration.class})
+// todo 如需开启 Nacos ,需在虚拟机参数上加上下列内容
+// -Dcsp.sentinel.dashboard.server=localhost:8131
 @SpringBootApplication
 @EnableScheduling
 @ServletComponentScan

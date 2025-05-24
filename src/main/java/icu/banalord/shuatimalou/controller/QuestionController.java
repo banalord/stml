@@ -1,6 +1,8 @@
 package icu.banalord.shuatimalou.controller;
 
-import cn.hutool.core.collection.CollUtil;
+import cn.dev33.satoken.annotation.SaCheckRole;
+import cn.dev33.satoken.stp.StpUtil;
+import cn.hutool.core.net.NetUtil;
 import cn.hutool.json.JSONUtil;
 import com.alibaba.csp.sentinel.Entry;
 import com.alibaba.csp.sentinel.EntryType;
@@ -8,10 +10,7 @@ import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.Tracer;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.alibaba.csp.sentinel.slots.block.degrade.DegradeException;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import icu.banalord.shuatimalou.annotation.AuthCheck;
 import icu.banalord.shuatimalou.common.BaseResponse;
 import icu.banalord.shuatimalou.common.DeleteRequest;
 import icu.banalord.shuatimalou.common.ErrorCode;
@@ -19,19 +18,20 @@ import icu.banalord.shuatimalou.common.ResultUtils;
 import icu.banalord.shuatimalou.constant.UserConstant;
 import icu.banalord.shuatimalou.exception.BusinessException;
 import icu.banalord.shuatimalou.exception.ThrowUtils;
+import icu.banalord.shuatimalou.manager.CounterManager;
 import icu.banalord.shuatimalou.model.dto.question.QuestionAddRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionEditRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionQueryRequest;
 import icu.banalord.shuatimalou.model.dto.question.QuestionUpdateRequest;
-import icu.banalord.shuatimalou.model.dto.questionBank.QuestionBatchDeleteRequest;
+import icu.banalord.shuatimalou.model.dto.question.QuestionBatchDeleteRequest;
 import icu.banalord.shuatimalou.model.entity.Question;
-import icu.banalord.shuatimalou.model.entity.QuestionBankQuestion;
 import icu.banalord.shuatimalou.model.entity.User;
 import icu.banalord.shuatimalou.model.vo.QuestionVO;
 import icu.banalord.shuatimalou.sentinel.SentinelConstant;
 import icu.banalord.shuatimalou.service.QuestionBankQuestionService;
 import icu.banalord.shuatimalou.service.QuestionService;
 import icu.banalord.shuatimalou.service.UserService;
+import icu.banalord.shuatimalou.utils.NetUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.web.bind.annotation.*;
@@ -39,7 +39,7 @@ import org.springframework.web.bind.annotation.*;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 题目接口
@@ -58,6 +58,8 @@ public class QuestionController {
     @Resource
     private QuestionBankQuestionService questionBankQuestionService;
 
+    @Resource
+    private CounterManager counterManager;
     // region 增删改查
 
     /**
@@ -124,7 +126,7 @@ public class QuestionController {
      * @return
      */
     @PostMapping("/update")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @SaCheckRole(UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> updateQuestion(@RequestBody QuestionUpdateRequest questionUpdateRequest) {
         if (questionUpdateRequest == null || questionUpdateRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
@@ -157,11 +159,47 @@ public class QuestionController {
     @GetMapping("/get/vo")
     public BaseResponse<QuestionVO> getQuestionVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+        User loginUser = (User) StpUtil.getSession().get(UserConstant.USER_LOGIN_STATE);
+        if (loginUser != null) {
+            crawlerDetect(loginUser.getId());
+        }
         // 查询数据库
         Question question = questionService.getById(id);
         ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR);
         // 获取封装类
         return ResultUtils.success(questionService.getQuestionVO(question, request));
+    }
+
+    /**
+     * 检测爬虫
+     *
+     * @param loginUserId
+     */
+    private void crawlerDetect(long loginUserId) {
+        // 调用多少次时告警
+        final int WARN_COUNT = 10;
+        // 调用多少次时封号
+        final int BAN_COUNT = 20;
+        // 拼接访问 key
+        String key = String.format("user:access:%s", loginUserId);
+        // 统计一分钟内访问次数，180 秒过期
+        long count = counterManager.incrAndGetCounter(key, 1, TimeUnit.MINUTES, 180);
+        // 是否封号
+        if (count > BAN_COUNT) {
+            // 踢下线
+            StpUtil.kickout(loginUserId);
+            // 封号
+            User updateUser = new User();
+            updateUser.setId(loginUserId);
+            updateUser.setUserRole(UserConstant.BAN_ROLE);
+            userService.updateById(updateUser);
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "访问次数过多，已被封号");
+        }
+        // 是否告警
+        if (count == WARN_COUNT) {
+            // 可以改为向管理员发送邮件通知
+            throw new BusinessException(110, "警告：访问太频繁");
+        }
     }
 
     /**
@@ -171,7 +209,7 @@ public class QuestionController {
      * @return
      */
     @PostMapping("/list/page")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @SaCheckRole(UserConstant.ADMIN_ROLE)
     public BaseResponse<Page<Question>> listQuestionByPage(@RequestBody QuestionQueryRequest questionQueryRequest) {
         ThrowUtils.throwIf(questionQueryRequest == null, ErrorCode.PARAMS_ERROR);
         Page<Question> pageBaseResponse = questionService.listQuestionByPage(questionQueryRequest);
@@ -213,7 +251,8 @@ public class QuestionController {
         // 限制爬虫
         ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
         // 基于 IP 限流
-        String remoteAddr = request.getRemoteAddr();
+        //String remoteAddr = request.getRemoteAddr();
+        String remoteAddr = NetUtils.getIpAddress(request);
         Entry entry = null;
         try {
             entry = SphU.entry(SentinelConstant.listQuestionVOByPage, EntryType.IN, 1, remoteAddr);
@@ -322,14 +361,14 @@ public class QuestionController {
         // todo 实现降级，es的bean若未正确注入，则用数据库查询
         // todo 取消注释开启 ES（须先配置 ES）
         // 查询 ES
-        Page<Question> questionPage = questionService.searchFromEs(questionQueryRequest);
+        //Page<Question> questionPage = questionService.searchFromEs(questionQueryRequest);
         // 查询数据库（作为没有 ES 的降级方案）
-        //Page<Question> questionPage = questionService.listQuestionByPage(questionQueryRequest);
+        Page<Question> questionPage = questionService.listQuestionByPage(questionQueryRequest);
         return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
     }
 
     @PostMapping("/delete/batch")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @SaCheckRole(UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> batchDeleteQuestions(@RequestBody QuestionBatchDeleteRequest questionBatchDeleteRequest) {
         ThrowUtils.throwIf(questionBatchDeleteRequest == null, ErrorCode.PARAMS_ERROR);
         questionService.batchDeleteQuestions(questionBatchDeleteRequest.getQuestionIdList());

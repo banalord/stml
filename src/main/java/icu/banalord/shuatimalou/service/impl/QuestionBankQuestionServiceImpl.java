@@ -1,6 +1,7 @@
 package icu.banalord.shuatimalou.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.collection.ListUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -35,6 +36,10 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -156,9 +161,7 @@ public class QuestionBankQuestionServiceImpl extends ServiceImpl<QuestionBankQue
             return questionBankQuestionVOPage;
         }
         // 对象列表 => 封装对象列表
-        List<QuestionBankQuestionVO> questionBankQuestionVOList = questionBankQuestionList.stream().map(questionBankQuestion -> {
-            return QuestionBankQuestionVO.objToVo(questionBankQuestion);
-        }).collect(Collectors.toList());
+        List<QuestionBankQuestionVO> questionBankQuestionVOList = questionBankQuestionList.stream().map(QuestionBankQuestionVO::objToVo).collect(Collectors.toList());
 
         // todo 可以根据需要为封装对象补充值，不需要的内容可以删除
         // region 可选
@@ -183,57 +186,76 @@ public class QuestionBankQuestionServiceImpl extends ServiceImpl<QuestionBankQue
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void batchAddQuestionToBank(List<Long> questionIdList, Long questionBankId, User loginUser) {
         ThrowUtils.throwIf(CollUtil.isEmpty(questionIdList), ErrorCode.PARAMS_ERROR, "题目列表为空");
-        ThrowUtils.throwIf(questionBankId == null || questionBankId < 0, ErrorCode.PARAMS_ERROR, "题库非法");
+        ThrowUtils.throwIf(questionBankId == null || questionBankId <= 0, ErrorCode.PARAMS_ERROR, "题库非法");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
-        //ThrowUtils.throwIf(!userService.isAdmin(loginUser), ErrorCode.NO_AUTH_ERROR);
-        // 检查题目id是否存在
-        //List<Question> questions = questionService.listByIds(questionIdList);
-        //List<Long> vaildQuestionIdList = new ArrayList<>(questions.stream().map(Question::getId).toList());
-
-        LambdaQueryWrapper<Question> lambdaQueryWrapper = Wrappers.lambdaQuery(Question.class)
-                .select(Question::getId)
-                .in(Question::getId, questionIdList);
-        // 合法的题目id列表
-        List<Long> validQuestionIdList = questionService.listObjs(lambdaQueryWrapper, o -> (Long) o);
-        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "合法的题目 id 列表为空");
-
-        // 这是过滤出 要从上面剔除的 已经插入过的
-        LambdaQueryWrapper<QuestionBankQuestion> lambdaQuery = Wrappers.lambdaQuery(QuestionBankQuestion.class)
-                .eq(QuestionBankQuestion::getQuestionBankId, questionBankId)
-                .in(QuestionBankQuestion::getQuestionId, validQuestionIdList);
-        // 已经插入过的题目列表
-        List<QuestionBankQuestion> existList = this.list(lambdaQuery);
-        // 已经插入过的题目id列表
-        List<Long> existIdList = existList.stream().map(QuestionBankQuestion::getId).toList();
-        // 从中移除
-        validQuestionIdList.removeAll(existIdList);
-        // 若移除后为空，则所有题目都已存在于题库中
-        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "所有题目都已存在于题库中");
-        // 判断题库是否合法
+        // 判断题库是否存在
         QuestionBank questionBank = questionBankService.getById(questionBankId);
         ThrowUtils.throwIf(questionBank == null, ErrorCode.NOT_FOUND_ERROR, "题库不存在");
 
-        // 分批处理避免长事务，假设每次处理 1000 条数据
+        LambdaQueryWrapper<Question> validQueryWrapper = Wrappers.lambdaQuery(Question.class)
+                .select(Question::getId)
+                .in(Question::getId, questionIdList);
+        // 合法的题目id列表
+        List<Long> validQuestionIdList = questionService.listObjs(validQueryWrapper, o -> (Long) o);
+        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "题目 id 均无效或不存在");
+
+        // 这是过滤出 要从上面剔除的 已经插入过的
+        LambdaQueryWrapper<QuestionBankQuestion> existQueryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
+                .select(QuestionBankQuestion::getQuestionId)
+                .eq(QuestionBankQuestion::getQuestionBankId, questionBankId)
+                .in(QuestionBankQuestion::getQuestionId, validQuestionIdList);
+        // 已经插入过的题目id列表
+        List<Long> existQuestionIdList = this.listObjs(existQueryWrapper, o -> (Long) o);
+
+        // 从中移除
+        validQuestionIdList.removeAll(existQuestionIdList);
+        // 若移除后为空，则所有题目都已存在于题库中
+        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "所有题目都已存在于题库中");
+
+        // 自定义线程池（IO 密集型线程池）
+        ThreadPoolExecutor customExecutor = new ThreadPoolExecutor(
+                4,             // 核心线程数
+                10,                        // 最大线程数
+                30L,                       // 线程空闲存活时间
+                TimeUnit.SECONDS,           // 存活时间单位
+                new LinkedBlockingQueue<>(3000),  // 阻塞队列容量
+                new ThreadPoolExecutor.CallerRunsPolicy() // 拒绝策略：由调用线程处理任务
+        );
+
+        // 布置所有批次任务
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        // 分批处理避免长事务，这里每次处理 1000 条数据
         int batchSize = 1000;
-        int totalQuestionListSize = validQuestionIdList.size();
-        for (int i = 0; i < totalQuestionListSize; i += batchSize) {
-            // 生成每批次的数据
-            List<Long> subList = validQuestionIdList.subList(i, Math.min(i + batchSize, totalQuestionListSize));
-            List<QuestionBankQuestion> questionBankQuestions = subList.stream().map(questionId -> {
-                QuestionBankQuestion questionBankQuestion = new QuestionBankQuestion();
-                questionBankQuestion.setQuestionBankId(questionBankId);
-                questionBankQuestion.setQuestionId(questionId);
-                questionBankQuestion.setUserId(loginUser.getId());
-                return questionBankQuestion;
-            }).collect(Collectors.toList());
+        // 改用HuTool的List分片工具类
+        List<List<Long>> partitions = ListUtil.partition(validQuestionIdList, batchSize);
+
+        for (List<Long> subList : partitions) {
+            List<QuestionBankQuestion> questionBankQuestions = subList.stream()
+                    .map(questionId -> {
+                        QuestionBankQuestion q = new QuestionBankQuestion();
+                        q.setQuestionBankId(questionBankId);
+                        q.setQuestionId(questionId);
+                        q.setUserId(loginUser.getId());
+                        return q;
+                    }).collect(Collectors.toList());
             // 使用事务处理每批数据
-            // 获取代理
-            QuestionBankQuestionService questionBankQuestionService = (QuestionBankQuestionServiceImpl) AopContext.currentProxy();
-            questionBankQuestionService.batchAddQuestionsToBankInner(questionBankQuestions);
-        }
+            // 通过代理获取Service，以免事务失效
+            QuestionBankQuestionService questionBankQuestionService = (QuestionBankQuestionService) AopContext.currentProxy();
+
+            // 异步处理每批数据，将任务添加到异步任务列表
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                questionBankQuestionService.batchAddQuestionsToBankInner(questionBankQuestions);
+            }, customExecutor);
+            futures.add(future);
+        }// for循环结束
+
+        // 等待所有批次完成操作
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        // 关闭线程池
+        customExecutor.shutdown();
     }
 
     /**
@@ -263,17 +285,44 @@ public class QuestionBankQuestionServiceImpl extends ServiceImpl<QuestionBankQue
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void batchRemoveQuestionFromBank(List<Long> questionIdList, Long questionBankId) {
-        // todo 待优化
         // 参数校验
-        ThrowUtils.throwIf(CollUtil.isEmpty(questionIdList), ErrorCode.PARAMS_ERROR, "题目列表不能为空");
-        ThrowUtils.throwIf(questionBankId <= 0, ErrorCode.PARAMS_ERROR, "题库 id 非法");
+        ThrowUtils.throwIf(CollUtil.isEmpty(questionIdList), ErrorCode.PARAMS_ERROR, "题目列表为空");
+        ThrowUtils.throwIf(questionBankId == null || questionBankId <= 0, ErrorCode.PARAMS_ERROR, "题库 id 非法");
+        // 判断题库是否存在
+        QuestionBank questionBank = questionBankService.getById(questionBankId);
+        ThrowUtils.throwIf(questionBank == null, ErrorCode.NOT_FOUND_ERROR, "题库不存在");
+
+        // 判断合法题目列表
+        LambdaQueryWrapper<Question> validQueryWrapper = Wrappers.lambdaQuery(Question.class)
+                .select(Question::getId)
+                .in(Question::getId, questionIdList);
+        // 合法的题目id列表
+        List<Long> validQuestionIdList = questionService.listObjs(validQueryWrapper, o -> (Long) o);
+        ThrowUtils.throwIf(CollUtil.isEmpty(validQuestionIdList), ErrorCode.PARAMS_ERROR, "题目 id 均无效或不存在");
+
+        // 过滤已经不存在于该题库中的题目id
+        LambdaQueryWrapper<QuestionBankQuestion> existQueryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
+                .select(QuestionBankQuestion::getQuestionId)
+                .eq(QuestionBankQuestion::getQuestionBankId, questionBankId)
+                .in(QuestionBankQuestion::getQuestionId, validQuestionIdList);
+        // 确定存在于该题库中的题目id列表（待删除的题目id列表）
+        List<Long> existQuestionIdList = this.listObjs(existQueryWrapper, o -> (Long) o);
+
+        // 若移除后为空，则所有题目都不存在于题库中
+        ThrowUtils.throwIf(CollUtil.isEmpty(existQuestionIdList), ErrorCode.PARAMS_ERROR, "所有题目都不存在于题库中");
 
         // 构造批量删除条件
-        LambdaQueryWrapper<QuestionBankQuestion> queryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
-                .in(QuestionBankQuestion::getQuestionId, questionIdList)
+        LambdaQueryWrapper<QuestionBankQuestion> deleteQueryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
+                .select(QuestionBankQuestion::getId)
+                .in(QuestionBankQuestion::getQuestionId, existQuestionIdList)
                 .eq(QuestionBankQuestion::getQuestionBankId, questionBankId);
 
-        boolean result = this.remove(queryWrapper);
+        boolean result = this.remove(deleteQueryWrapper);
+        // Spring 的事务（@Transactional）是线程隔离的！
+        // 所以：即使主线程事务回滚了，子线程删除也不会回滚
+        // 无论是写入还是删除，只要是子线程中执行的数据库操作，就不在主事务上下文内。
+        // 但是写入失败可以设计 重试机制、增量恢复机制
+        // 而删除操作是毁灭性的，因此不使用多线程提高性能！！！
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR, "从题库移除题目失败");
     }
 
